@@ -1,6 +1,0 @@
-{
-  "name": "GoRide",
-  "description": "Customer booking app for taxi, car rental, and goods transport powered by Supabase.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

@@ -2,22 +2,21 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
+// GoRide customer palette: warm amber brand on slate
+val BrandAmber = Color(0xFFF59E0B)
+val BrandAmberDark = Color(0xFFD97706)
+val BrandSky = Color(0xFF0EA5E9)
+
+val Slate950 = Color(0xFF0B1120)
 val Slate900 = Color(0xFF0F172A)
 val Slate800 = Color(0xFF1E293B)
 val Slate700 = Color(0xFF334155)
-val Slate600 = Color(0xFF475569)
-val Slate100 = Color(0xFFF1F5F9)
-val Slate50 = Color(0xFFF8FAFC)
 
-val AmberPrimary = Color(0xFFD97706)
-val AmberSecondary = Color(0xFFF59E0B)
-val AmberLight = Color(0xFFFEF3C7)
+val SuccessGreen = Color(0xFF22C55E)
+val DangerRed = Color(0xFFEF4444)
+val WarningAmber = Color(0xFFF59E0B)
+val SosRed = Color(0xFFDC2626)
 
-val SkyAccent = Color(0xFF0284C7)
-val SkyLight = Color(0xFFE0F2FE)
-
-val EmeraldSuccess = Color(0xFF059669)
-val EmeraldLight = Color(0xFFD1FAE5)
-
-val RoseError = Color(0xFFDC2626)
-val RoseLight = Color(0xFFFEE2E2)
+val TextPrimary = Color(0xFFF8FAFC)
+val TextSecondary = Color(0xFF94A3B8)
+val TextTertiary = Color(0xFF64748B)
