@@ -1,366 +1,180 @@
 package com.example
 
+import android.Manifest
+import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.*
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.*
-import com.example.ui.screens.*
-import com.example.ui.theme.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.example.data.CheckoutOrder
+import com.example.push.PushMessagingService
+import com.example.ui.RiderViewModel
+import com.example.ui.Screen
+import com.example.ui.needsNotificationPermission
+import com.example.ui.screens.AuthScreen
+import com.example.ui.screens.BlockedScreen
+import com.example.ui.screens.CompleteProfileScreen
+import com.example.ui.screens.EmergencyContactsScreen
+import com.example.ui.screens.HomeScreen
+import com.example.ui.screens.PickPlaceScreen
+import com.example.ui.screens.ProfileScreen
+import com.example.ui.screens.QuoteScreen
+import com.example.ui.screens.RideDetailScreen
+import com.example.ui.screens.RidesScreen
+import com.example.ui.screens.SavedPlacesScreen
+import com.example.ui.screens.SplashScreen
+import com.example.ui.screens.SupportScreen
+import com.example.ui.screens.TripScreen
+import com.example.ui.screens.WalletScreen
+import com.example.ui.theme.GoRideTheme
+import com.razorpay.Checkout
+import com.razorpay.PaymentData
+import com.razorpay.PaymentResultWithDataListener
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), PaymentResultWithDataListener {
+
+    private val viewModel: RiderViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        Checkout.preload(applicationContext)
+        handleIntent(intent)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.checkoutEvents.collect(::openCheckout)
+            }
+        }
         setContent {
             GoRideTheme {
-                CustomerAppRoot()
+                RiderAppRoot(viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.onAppResumed()
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val rideId = intent?.getStringExtra(PushMessagingService.EXTRA_RIDE_ID) ?: return
+        intent.removeExtra(PushMessagingService.EXTRA_RIDE_ID)
+        viewModel.handleRideIntent(rideId)
+    }
+
+    private fun openCheckout(order: CheckoutOrder) {
+        val checkout = Checkout().apply { setKeyID(order.keyId) }
+        val options = JSONObject()
+            .put("name", order.name)
+            .put("description", order.description)
+            .put("order_id", order.orderId)
+            .put("amount", order.amountPaise)
+            .put("currency", order.currency)
+            .put("theme", JSONObject().put("color", "#F59E0B"))
+            .put("prefill", JSONObject().put("name", order.prefillName).put("contact", order.prefillContact))
+            .put("retry", JSONObject().put("enabled", true).put("max_count", 3))
+        try {
+            checkout.open(this, options)
+        } catch (e: Exception) {
+            Log.e("Checkout", "Couldn't open Razorpay checkout", e)
+            viewModel.onCheckoutError(-1, e.message)
+        }
+    }
+
+    override fun onPaymentSuccess(razorpayPaymentId: String?, data: PaymentData?) {
+        viewModel.onCheckoutSuccess(data?.orderId, razorpayPaymentId ?: data?.paymentId, data?.signature)
+    }
+
+    override fun onPaymentError(code: Int, response: String?, data: PaymentData?) {
+        val description = response?.let { runCatching { JSONObject(it).optJSONObject("error")?.optString("description") }.getOrNull() ?: it }
+        viewModel.onCheckoutError(if (code == Checkout.PAYMENT_CANCELED) 0 else code, description)
     }
 }
 
 @Composable
-fun CustomerAppRoot(viewModel: CustomerAppViewModel = viewModel()) {
-    val authState by viewModel.authUiState.collectAsState()
-    val currentTab by viewModel.currentTab.collectAsState()
-    val notification by viewModel.notification.collectAsState()
-    val activeRide by viewModel.activeRide.collectAsState()
-    val selectedInvoice by viewModel.selectedInvoice.collectAsState()
+fun RiderAppRoot(viewModel: RiderViewModel) {
+    val screen by viewModel.screen.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
 
-    var showActiveRideDetails by remember { mutableStateOf(false) }
-
-    LaunchedEffect(activeRide?.id, activeRide?.status) {
-        if (activeRide != null && activeRide?.status != "completed" && activeRide?.status != "cancelled") {
-            showActiveRideDetails = true
-        }
+    LaunchedEffect(Unit) {
+        viewModel.messageFlow.collect { snackbar.showSnackbar(it) }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        bottomBar = {
-            if (authState is AuthUiState.Authenticated) {
-                CustomerBottomNavigation(
-                    currentTab = currentTab,
-                    onTabSelected = {
-                        viewModel.setTab(it)
-                        showActiveRideDetails = false
-                    }
-                )
-            }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            when (val state = authState) {
-                is AuthUiState.Unauthenticated, is AuthUiState.OtpSent, is AuthUiState.Suspended -> {
-                    AuthScreen(viewModel = viewModel, authState = state)
-                }
-                is AuthUiState.Authenticated -> {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        // Top App Bar
-                        CustomerTopBar(
-                            tab = currentTab,
-                            hasActiveRide = activeRide != null && activeRide?.status != "completed" && activeRide?.status != "cancelled",
-                            isShowingActiveRide = showActiveRideDetails,
-                            onToggleActiveRide = { showActiveRideDetails = !showActiveRideDetails }
-                        )
-
-                        // Main Content depending on currentTab
-                        Box(modifier = Modifier.weight(1f)) {
-                            when (currentTab) {
-                                AppTab.HOME -> {
-                                    if (activeRide != null && showActiveRideDetails) {
-                                        ActiveRideScreen(
-                                            viewModel = viewModel,
-                                            ride = activeRide!!
-                                        )
-                                    } else {
-                                        Column(modifier = Modifier.fillMaxSize()) {
-                                            // Active ride banner if collapsed
-                                            if (activeRide != null && (activeRide?.status != "completed" && activeRide?.status != "cancelled")) {
-                                                Surface(
-                                                    color = AmberLight,
-                                                    shape = RoundedCornerShape(12.dp),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                                                        .testTag("active_ride_banner")
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .padding(12.dp)
-                                                            .fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                                            Text("🚕", fontSize = 18.sp)
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                            Column {
-                                                                Text("Active Booking in Progress", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Slate900)
-                                                                Text("Status: ${activeRide?.status}", fontSize = 11.sp, color = AmberPrimary)
-                                                            }
-                                                        }
-                                                        Button(
-                                                            onClick = { showActiveRideDetails = true },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = AmberPrimary),
-                                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                            shape = RoundedCornerShape(8.dp)
-                                                        ) {
-                                                            Text("Track", fontSize = 12.sp, color = Color.White)
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            HomeScreen(
-                                                viewModel = viewModel,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                    }
-                                }
-                                AppTab.BOOKINGS -> {
-                                    BookingsScreen(viewModel = viewModel)
-                                }
-                                AppTab.WALLET -> {
-                                    WalletScreen(viewModel = viewModel)
-                                }
-                                AppTab.PROFILE -> {
-                                    ProfileScreen(viewModel = viewModel, profile = state.profile)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Notification Banner at top
-            notification?.let { notif ->
-                LaunchedEffect(notif.timestamp) {
-                    kotlinx.coroutines.delay(4000)
-                    viewModel.dismissNotification()
-                }
-
-                Surface(
-                    color = if (notif.isError) RoseError else Slate900,
-                    shape = RoundedCornerShape(12.dp),
-                    shadowElevation = 6.dp,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 16.dp, start = 16.dp, end = 16.dp)
-                        .fillMaxWidth()
-                        .testTag("notification_banner")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = notif.message,
-                            color = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(
-                            onClick = { viewModel.dismissNotification() },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color.White, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-            }
-
-            // Printable Invoice Modal (Section 8)
-            selectedInvoice?.let { invoice ->
-                InvoiceDialog(
-                    invoice = invoice,
-                    onDismiss = { viewModel.closeInvoice() }
-                )
-            }
-        }
+    val signedIn = screen !is Screen.Auth && screen !is Screen.Splash && screen !is Screen.Blocked && screen != Screen.CompleteProfile
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.any { it }) viewModel.refreshMyLocation()
+    }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(signedIn) {
+        if (!signedIn) return@LaunchedEffect
+        locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
+    // Trip updates arrive as notifications, so ask once the first booking screen is reached.
+    LaunchedEffect(screen is Screen.Trip) {
+        if (screen is Screen.Trip && needsNotificationPermission) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    BackHandler(enabled = showActiveRideDetails) {
-        showActiveRideDetails = false
-    }
-}
+    BackHandler(enabled = signedIn && screen != Screen.Home) { viewModel.back() }
 
-@Composable
-fun CustomerTopBar(
-    tab: AppTab,
-    hasActiveRide: Boolean,
-    isShowingActiveRide: Boolean,
-    onToggleActiveRide: () -> Unit
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 1.dp
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    color = AmberPrimary,
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("⚡", fontSize = 18.sp)
-                    }
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "GoRide & Cargo",
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 17.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = when (tab) {
-                            AppTab.HOME -> if (isShowingActiveRide) "Live Ride Tracking" else "Passenger & Goods"
-                            AppTab.BOOKINGS -> "Booking History"
-                            AppTab.WALLET -> "Wallet & Balance"
-                            AppTab.PROFILE -> "Customer Profile"
-                        },
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (tab == AppTab.HOME && hasActiveRide) {
-                OutlinedButton(
-                    onClick = onToggleActiveRide,
-                    shape = RoundedCornerShape(20.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (isShowingActiveRide) SkyLight else AmberLight
-                    )
-                ) {
-                    Text(
-                        text = if (isShowingActiveRide) "➕ New Ride" else "📍 Tracking",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isShowingActiveRide) SkyAccent else AmberPrimary
-                    )
-                }
-            }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        when (val s = screen) {
+            Screen.Splash -> SplashScreen(viewModel)
+            Screen.Auth -> AuthScreen(viewModel)
+            Screen.CompleteProfile -> CompleteProfileScreen(viewModel)
+            is Screen.Blocked -> BlockedScreen(viewModel, s.message)
+            Screen.Home -> HomeScreen(viewModel)
+            is Screen.PickPlace -> PickPlaceScreen(viewModel, s.target)
+            Screen.Quote -> QuoteScreen(viewModel)
+            is Screen.Trip -> TripScreen(viewModel, s.rideId)
+            Screen.Rides -> RidesScreen(viewModel)
+            is Screen.RideDetail -> RideDetailScreen(viewModel, s.rideId)
+            Screen.Wallet -> WalletScreen(viewModel)
+            Screen.Profile -> ProfileScreen(viewModel)
+            Screen.SavedPlaces -> SavedPlacesScreen(viewModel)
+            Screen.EmergencyContacts -> EmergencyContactsScreen(viewModel)
+            Screen.Support -> SupportScreen(viewModel)
         }
-    }
-}
-
-@Composable
-fun CustomerBottomNavigation(
-    currentTab: AppTab,
-    onTabSelected: (AppTab) -> Unit
-) {
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp,
-        windowInsets = NavigationBarDefaults.windowInsets
-    ) {
-        NavigationBarItem(
-            selected = currentTab == AppTab.HOME,
-            onClick = { onTabSelected(AppTab.HOME) },
-            icon = {
-                Icon(
-                    if (currentTab == AppTab.HOME) Icons.Filled.DirectionsCar else Icons.Outlined.DirectionsCar,
-                    contentDescription = "Home"
-                )
-            },
-            label = { Text("Home", fontSize = 12.sp, fontWeight = if (currentTab == AppTab.HOME) FontWeight.Bold else FontWeight.Normal) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Slate900,
-                selectedTextColor = AmberPrimary,
-                indicatorColor = AmberSecondary
-            ),
-            modifier = Modifier.testTag("nav_home")
-        )
-
-        NavigationBarItem(
-            selected = currentTab == AppTab.BOOKINGS,
-            onClick = { onTabSelected(AppTab.BOOKINGS) },
-            icon = {
-                Icon(
-                    if (currentTab == AppTab.BOOKINGS) Icons.Filled.ConfirmationNumber else Icons.Outlined.ConfirmationNumber,
-                    contentDescription = "Bookings"
-                )
-            },
-            label = { Text("Bookings", fontSize = 12.sp, fontWeight = if (currentTab == AppTab.BOOKINGS) FontWeight.Bold else FontWeight.Normal) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Slate900,
-                selectedTextColor = AmberPrimary,
-                indicatorColor = AmberSecondary
-            ),
-            modifier = Modifier.testTag("nav_bookings")
-        )
-
-        NavigationBarItem(
-            selected = currentTab == AppTab.WALLET,
-            onClick = { onTabSelected(AppTab.WALLET) },
-            icon = {
-                Icon(
-                    if (currentTab == AppTab.WALLET) Icons.Filled.AccountBalanceWallet else Icons.Outlined.AccountBalanceWallet,
-                    contentDescription = "Wallet"
-                )
-            },
-            label = { Text("Wallet", fontSize = 12.sp, fontWeight = if (currentTab == AppTab.WALLET) FontWeight.Bold else FontWeight.Normal) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Slate900,
-                selectedTextColor = AmberPrimary,
-                indicatorColor = AmberSecondary
-            ),
-            modifier = Modifier.testTag("nav_wallet")
-        )
-
-        NavigationBarItem(
-            selected = currentTab == AppTab.PROFILE,
-            onClick = { onTabSelected(AppTab.PROFILE) },
-            icon = {
-                Icon(
-                    if (currentTab == AppTab.PROFILE) Icons.Filled.Person else Icons.Outlined.Person,
-                    contentDescription = "Profile"
-                )
-            },
-            label = { Text("Profile", fontSize = 12.sp, fontWeight = if (currentTab == AppTab.PROFILE) FontWeight.Bold else FontWeight.Normal) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = Slate900,
-                selectedTextColor = AmberPrimary,
-                indicatorColor = AmberSecondary
-            ),
-            modifier = Modifier.testTag("nav_profile")
+        SnackbarHost(
+            snackbar,
+            Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = if (screen in tabScreens) 88.dp else 16.dp),
         )
     }
 }
+
+private val tabScreens = setOf<Screen>(Screen.Home, Screen.Rides, Screen.Wallet, Screen.Profile)
